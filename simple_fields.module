@@ -1,0 +1,791 @@
+<?php
+
+/**
+ * @file
+ * Module for the Entityform Entity - a starting point to create your own Entity
+ * and associated administration interface
+ */
+
+/**
+ * Implements hook_menu().
+ */
+function simple_fields_menu() {
+  $items = array();
+  // Create tabs for all possible bundles.
+  foreach (entity_get_info() as $entity_type => $entity_info) {
+    if ($entity_info['fieldable']) {
+      foreach ($entity_info['bundles'] as $bundle_name => $bundle_info) {
+        if (isset($bundle_info['admin'])) {
+          // Extract path information from the bundle.
+          $path = $bundle_info['admin']['path'];
+          // Different bundles can appear on the same path (e.g. %node_type and
+          // %comment_node_type). To allow field_ui_menu_load() to extract the
+          // actual bundle object from the translated menu router path
+          // arguments, we need to identify the argument position of the bundle
+          // name string ('bundle argument') and pass that position to the menu
+          // loader. The position needs to be casted into a string; otherwise it
+          // would be replaced with the bundle name string.
+          if (isset($bundle_info['admin']['bundle argument'])) {
+            $bundle_arg = $bundle_info['admin']['bundle argument'];
+            $bundle_pos = (string) $bundle_arg;
+          }
+          else {
+            $bundle_arg = $bundle_name;
+            $bundle_pos = '0';
+          }
+          // This is the position of the %field_ui_menu placeholder in the
+          // items below.
+          $field_position = count(explode('/', $path)) + 1;
+          $items["$path/fields/%field_ui_menu/location_condition"] = array(
+            'load arguments' => array($entity_type, $bundle_arg, $bundle_pos, '%map'),
+            'title' => 'Edit',
+            'page callback' => 'drupal_get_form',
+            'page arguments' => array('simple_fields_manager_location_condition', $field_position),
+            'type' => MENU_DEFAULT_LOCAL_TASK,
+          );
+        }
+      }
+    }
+  }
+  $items["admin/config/content/simplefields/fields/%/field_condition"] = array(
+    'load arguments' => array($entity_type, $bundle_arg, $bundle_pos, '%map'),
+    'title' => t('Edit field dependence'),
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('simple_fields_manager_field_condition', $field_position),
+    'type' => MENU_CALLBACK,
+    'access arguments' => array('access simple fields manager'),
+      'file' => 'simple_fields.forms.inc',
+  );
+  $items["admin/config/content/simplefields/fields/%/location_condition"] = array(
+    'load arguments' => array($entity_type, $bundle_arg, $bundle_pos, '%map'),
+    'title' => t('Edit location dependence'),
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('simple_fields_manager_location_condition', $field_position),
+    'type' => MENU_CALLBACK,
+    'access arguments' => array('access simple fields manager'),
+      'file' => 'simple_fields.forms.inc',
+  );
+  $items["admin/config/content/simplefields/fields/%/edit"] = array(
+    'load arguments' => array($entity_type, $bundle_arg, $bundle_pos, '%map'),
+    'title' => t('Edit question'),
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('simple_fields_field_edit_label_form', $field_position),
+    'type' => MENU_CALLBACK,
+    'access arguments' => array('access simple fields manager'),
+      'file' => 'simple_fields.forms.inc',
+  );
+  $items['admin/config/content/simplefields'] = array(
+      'title' => 'Simple fields',
+      'description' => '',
+      'page callback' => 'drupal_get_form',
+      'page arguments' => array('simple_fields_manager'),
+      'access arguments' => array('access simple fields manager'),
+      'type' => MENU_NORMAL_ITEM,
+//      'file' => 'simple_fields.forms.inc',
+  );
+  $items['admin/config/content/simplefields/edit'] = array(
+    'title' => t('Edit'),
+    'weight' => -10,
+    'type' => MENU_DEFAULT_LOCAL_TASK,
+  );
+  $items['admin/config/content/simplefields/config'] = array(
+      'title' => 'Configuration',
+      'description' => '',
+      'page callback' => 'drupal_get_form',
+      'page arguments' => array('simple_fields_manager_admin'),
+      'access arguments' => array('admin simple fields manager'),
+      'type' => MENU_LOCAL_TASK,
+      'file' => 'simple_fields.forms.inc',
+  );
+  return $items;
+}
+
+/**
+ * Implements hook_permission().
+ */
+function simple_fields_permission() {
+  $permissions = array(
+      'access simple fields manager' => array(
+          'title' => t('Access to simple field manager'),
+      ),
+      'admin simple fields manager' => array(
+          'title' => t('Administer the simple field manager configuration'),
+      ),
+  );
+  return $permissions;
+}
+
+/**
+ * Implements menu callbacks
+ */
+
+
+
+function simple_fields_manager($form, &$form_state) {
+  drupal_set_title(t('Simple fields manager'));
+  //require_once DRUPAL_ROOT . '/' . drupal_get_path('module', 'field_ui') . '/field_ui.admin.inc'; 
+  include_once DRUPAL_ROOT . '/' . drupal_get_path('module', 'simple_fields') . '/simple_fields.admin.inc'; 
+  $entity_type =  variable_get('simple_fields_entity_type','');
+  $bundle = variable_get('simple_fields_entity_bundle','');
+  $location_field = variable_get('simple_fields_location_field','');
+  $exclude_fields = variable_get('simple_fields_exclude_fields','');
+  $exclude_fields[$location_field] = $location_field;
+  $noconf_fields = variable_get('simple_fields_noconf_fields', '');
+  //$admin_path = _field_ui_bundle_admin_path($entity_type, $bundle);
+  $admin_path = 'admin/config/content/simplefields';
+  $form = field_ui_field_overview_form($form, &$form_state, $entity_type, $bundle);
+  $conditions = conditional_fields_load_dependencies($entity_type, $bundle);
+  if(module_exists('field_group')) {
+    form_load_include($form_state, 'inc', 'field_group', 'field_group.field_ui');
+    field_group_field_ui_overview_form_alter($form, $form_state);
+  }
+
+  /**
+   * Lets customize the default form 'manage fields'
+   */
+  // load needed vars like overview_form
+  $bundle = field_extract_bundle($entity_type, $bundle);
+
+  // Gather bundle information.
+  $instances = field_info_instances($entity_type, $bundle);
+  $field_types = field_info_field_types();
+  $widget_types = field_info_widget_types();
+  $extra_fields = field_info_extra_fields($entity_type, $bundle, 'form');
+
+  // Get the possible field conditioning
+  $aviable_conditionals = array();
+  foreach ($instances as $field) {
+    if(in_array($field['field_name'], $exclude_fields)) { continue; }
+    $aviable_conditionals[$field['field_name']] = $field['id'];
+  }
+
+  $form['fields']['#header'] = array (
+    t('Label'),
+    t('Weight'),
+    t('Parent'),
+    array('data' => t('Operations'), 'colspan' => 5),
+    );
+
+  // Clear group options
+  if(module_exists('field_group')) {
+      $params = field_group_field_ui_form_params($form, FALSE);
+    foreach ($form['#groups'] as $count => $group_name) {
+      $form['fields'][$group_name]['format']['type']['#type'] = 'hidden';
+      $form['fields'][$group_name]['settings_summary']['#type'] = 'hidden';
+      $form['fields'][$group_name]['group_name']['#type'] = 'hidden';
+      $form['fields'][$group_name]['settings_edit']['#type'] = 'hidden';
+      $form['fields'][$group_name]['delete']['#cell_attributes'] = array('colspan' => 1);
+      $form['fields'][$group_name]['delete']['#markup'] = l(t('delete'), $params->admin_path . '/groups/' . $group_name . '/delete/form', array('query'=> array('destination' => 'admin/config/content/simplefields')));
+    }
+    $form['additional_settings']['#type'] = 'hidden';
+    $form['fields']['_add_new_group']['format']['type']['#type'] = 'hidden';
+    $form['fields']['_add_new_group']['format']['type']['#value'] =  $form['fields']['_add_new_group']['format']['type']['#default_value'];
+    $form['fields']['_add_new_group']['label']['#size'] = 60;
+    $form['fields']['_add_new_group']['label']['#maxlength'] = 260;
+  }
+//  conditional_fields_dependency_insert();
+
+  foreach ($instances as $name => $instance) {
+    if(in_array($name, $exclude_fields)) {
+      unset($form['fields'][$name]);
+      continue;
+    }
+    $field = field_info_field($instance['field_name']);
+//    $admin_field_path = $admin_path . '/fields/' . $instance['field_name'];
+    $admin_field_path = $admin_path . '/fields/' . $instance['id'];
+    unset($form['fields'][$name]['field_name']);
+    unset($form['fields'][$name]['type']);
+    unset($form['fields'][$name]['widget_type']);
+    unset($form['fields'][$name]['edit']);
+//    $form['fields'][$name]['label']['#cell_attributes'] = array('colspan' => 8);
+    $field_cond_list = '';
+    $location_cond_list = '';
+    if(isset($conditions['dependents'][$name])) {
+      foreach($conditions['dependents'][$name] as $id => $cond) {
+        if($cond['dependee'] == $location_field) {
+          foreach($cond['options']['value'] as $id => $tid) {
+            $location_cond_list .= taxonomy_term_load($tid['tid'])->name . ', ';
+          }
+        }
+        if(array_key_exists($cond['dependee'],$aviable_conditionals)) {
+          $field_cond_list .= $cond['dependee'] . ', ';
+        }
+      }
+    }
+    if($field_cond_list == '') {
+      $field_desc = t('This question is not conditioned to any other question');
+    } else {
+      $field_desc = t('This question is visible when  %list is checked', array('%list' => substr($field_cond_list, 0 , -2)));
+    }
+    if($location_cond_list == '') {
+      $location_desc = t('This question is not conditioned to a region');
+    } else {
+      $list = substr($location_cond_list, 0, -2);
+      if(strlen($list) > 200) {
+        $list = substr($list, 0, 197) . '...';
+      }
+      $location_desc = t('This question is visible in the regions: %list', array('%list' => $list));
+    }
+    $form['fields'][$name]['location_condition'] = array (
+      '#type' => 'link',
+      '#title' => t('location condition'),
+      '#description' => $location_desc,
+      '#suffix' => '<div class="item-description">'.$location_desc.'</div>',
+      '#href' => $admin_field_path . '/location_condition',
+      '#options' => array('attributes' => array('title' => t('Add a location based condition.'))),
+      );
+    $form['fields'][$name]['field_condition'] = array (
+      '#type' => 'link',
+      '#title' => t('field condition'),
+      '#description' => $field_desc,
+      '#suffix' => '<div class="item-description">'.$field_desc.'</div>',
+      '#href' => $admin_field_path . '/field_condition',
+      '#options' => array('attributes' => array('title' => t('Add a field based condition.'))),
+      );
+    $form['fields'][$name]['edit'] = array (
+      '#type' => 'link',
+      '#title' => t('edit question'),
+      '#href' => $admin_field_path . '/edit',
+      '#options' => array('attributes' => array('title' => t('Edit question.'))),
+      '#cell_attributes' => array('colspan' => 2),
+      );
+    // After delete return to de simplefields page
+      global $base_url;
+      $admin_path_delete = $base_url .'/' . _field_ui_bundle_admin_path($entity_type, $bundle);
+      $form['fields'][$name]['delete'] = array(
+        '#markup' => l(t('delete'), $admin_path_delete . '/fields/' . $name . '/delete', array('query'=> array('destination' => 'admin/config/content/simplefields'))),
+      );
+    
+    if(in_array($name, $noconf_fields)) {
+      unset($form['fields'][$name]['location_condition']);
+      unset($form['fields'][$name]['field_condition']);
+      unset($form['fields'][$name]['edit']);
+      unset($form['fields'][$name]['delete']);
+      continue;
+    }
+  } // end foreach
+  unset($form['fields']['_add_existing_field']);
+  $form['fields']['_add_new_field']['type']['#type'] = 'hidden';
+  $form['fields']['_add_new_field']['type']['#value'] = variable_get('simple_fields_field_type' ,'');
+  $form['fields']['_add_new_field']['widget_type']['#type'] = 'hidden';
+  $form['fields']['_add_new_field']['widget_type']['#value'] = variable_get('simple_fields_field_widget' ,'');
+  //$form['fields']['_add_new_field']['label']['#cell_attributes'] = array('colspan' => 2);
+  $form['fields']['_add_new_field']['label']['#size'] = 60;
+  $form['fields']['_add_new_field']['label']['#maxlength'] = 260;
+  //$form['fields']['_add_new_field']['field_name']['#type'] = 'hidden';
+  $form['fields']['_add_new_field']['field_name']['#size'] = 30;
+  $form['fields']['_add_new_field']['field_name']['#maxlength'] = 30;
+  unset($form['fields'][$location_field]);
+  // The function can not be founded and we can redeclarate it
+  // we redefine the function with diferent name but the same code
+  // at the end of the file to get this check working
+  $form['fields']['_add_new_field']['field_name']['#machine_name']['exists'] = '_simple_fields_field_name_exists';
+
+  $form['#attached']['css'][] = drupal_get_path('module', 'simple_fields') . '/css/forms.css';
+  $form['#submit'][] = 'simple_fields_manager_submit';
+
+  return $form;
+
+}
+
+function simple_fields_manager_submit($form, &$form_state) {
+  watchdog('simple_fields', "form submit");
+  $form_values = $form_state['values']['fields'];
+  $entity_type = $form['#entity_type'];
+  $bundle = $form['#bundle'];
+  $admin_path = _field_ui_bundle_admin_path($entity_type, $bundle);
+
+  $bundle_settings = field_bundle_settings($entity_type, $bundle);
+
+  // Update field weights.
+  foreach ($form_values as $key => $values) {
+    if (in_array($key, $form['#fields'])) {
+      $instance = field_read_instance($entity_type, $key, $bundle);
+      $instance['widget']['weight'] = $values['weight'];
+      field_update_instance($instance);
+    }
+    elseif (in_array($key, $form['#extra'])) {
+      $bundle_settings['extra_fields']['form'][$key]['weight'] = $values['weight'];
+    }
+  }
+  field_bundle_settings($entity_type, $bundle, $bundle_settings);
+  $destinations = array();
+
+  // Create new field.
+  $field = array();
+  if (!empty($form_values['_add_new_field']['field_name'])) {
+    $values = $form_values['_add_new_field'];
+    // Quiron hacked for Ictineo
+    /// Change the field name to allow long labels starting with de same words
+    /// creating diferent labels. Set an id  with 6 characters at the end
+    if(strlen($values['field_name']) > 7) {
+        $values['field_name'] = substr($values['field_name'], 0, -6) . (string) count(field_info_fields());
+    }
+    // End Quiron hacked for Ictineo
+    $field = array(
+      'field_name' => $values['field_name'],
+      'type' => $values['type'],
+      'translatable' => $values['translatable'],
+      'module' => 'list',
+    );
+    $instance = array(
+      'field_name' => $field['field_name'],
+      'entity_type' => $entity_type,
+      'bundle' => $bundle,
+      'label' => $values['label'],
+      'widget' => array(
+        'type' => $values['widget_type'],
+        'weight' => $values['weight'],
+        'settings' => array('display_label' => 1),
+      ),
+      'display' => array(
+        'default' => array( 
+          'type' => 'list_bool_graphic',
+        ),
+      ),
+   );
+
+    // Create the field and instance.
+    try {
+      field_create_field($field);
+      field_create_instance($instance);
+//      $destinations[] = $admin_path . '/fields/' . $field['field_name'] . '/field-settings';
+//      $destinations[] = $admin_path . '/fields/' . $field['field_name'];
+      // Store new field information for any additional submit handlers.
+      $form_state['fields_added']['_add_new_field'] = $field['field_name'];
+    }
+    catch (Exception $e) {
+      drupal_set_message(t('There was a problem creating field %label: !message', array('%label' => $instance['label'], '!message' => $e->getMessage())), 'error');
+    }
+  }
+
+  field_cache_clear();
+
+  if ($destinations) {
+    $destination = drupal_get_destination();
+    $destinations[] = $destination['destination'];
+    unset($_GET['destination']);
+    $form_state['redirect'] = field_ui_get_destinations($destinations);
+  }
+  else {
+    drupal_set_message(t('Your settings have been saved.'));
+  }
+}
+
+function simple_fields_field_create_instance($instance) {
+    /// Quiron added form ictineo, taken from field_ui
+    // Add additional field type settings. The field type module is
+    // responsible for not returning settings that cannot be changed if
+    // the field already has data.
+/*    $field = field_info_field($instance['field_name']);
+    $has_data = field_has_data($field);
+    $additions = module_invoke($field['module'], 'field_settings_form', $field, $instance, $has_data);
+    if (is_array($additions)) {
+      $nfield['settings'] = $additions;
+      $field = array_merge($field, $nfield);
+    }
+  try {
+    field_update_field($field);
+  }
+  catch (Exception $e) {
+    drupal_set_message(t('Attempt to update field %label failed: %message.', array('%label' => $instance['label'], '%message' => $e->getMessage())), 'error');
+    return;
+  }
+
+    $additions = module_invoke($field['module'], 'field_instance_settings_form', $field, $instance);
+    if (is_array($additions)) {
+      $nfield['settings'] = $additions;
+      $instance = array_merge($instance, $nfield);
+    }
+  try {
+    field_update_instance($instance);
+  }
+  catch (Exception $e) {
+    drupal_set_message(t('Attempt to update field %label failed: %message.', array('%label' => $instance['label'], '%message' => $e->getMessage())), 'error');
+    return;
+  }
+*/
+  $field = field_info_field($instance['field_name']);
+  // Harcode added values config
+  // dIRTY hacK
+  $field['settings']['allowed_values'] = array( 0, 1);
+  $field['settings']['allowed_values_function'] = array( '#type' => 'value', '#value' => '');
+  try {
+    field_update_field($field);
+  }
+  catch (Exception $e) {
+    drupal_set_message(t('Attempt to update field %label failed: %message.', array('%label' => $instance['label'], '%message' => $e->getMessage())), 'error');
+    return;
+  }
+
+}
+
+/**
+ * Form constructor for the field instance settings form.
+ *
+ *  Taken from fields_ui.admin.inc
+ * @see field_ui_field_edit_form_validate()
+ * @see field_ui_field_edit_form_submit()
+ * @ingroup forms
+ */
+
+
+function _simple_fields_field_name_exists($value) {
+  // Prefix with 'field_'.
+  $field_name = 'field_' . $value;
+
+  // We need to check inactive fields as well, so we can't use
+  // field_info_fields().
+  return (bool) field_read_fields(array('field_name' => $field_name), array('include_inactive' => TRUE));
+}
+
+
+function _simple_fields_display_overview_form($form, &$form_state, $entity_type, $bundle, $view_mode) {
+  $bundle = field_extract_bundle($entity_type, $bundle);
+
+  field_ui_inactive_message($entity_type, $bundle);
+  $admin_path = _field_ui_bundle_admin_path($entity_type, $bundle);
+
+  // Gather type information.
+  $instances = field_info_instances($entity_type, $bundle);
+  $field_types = field_info_field_types();
+  $extra_fields = field_info_extra_fields($entity_type, $bundle, 'display');
+
+  $form_state += array(
+    'formatter_settings_edit' => NULL,
+  );
+
+  $form += array(
+    '#entity_type' => $entity_type,
+    '#bundle' => $bundle,
+    '#view_mode' => $view_mode,
+    '#fields' => array_keys($instances),
+    '#extra' => array_keys($extra_fields),
+  );
+
+  if (empty($instances) && empty($extra_fields)) {
+    drupal_set_message(t('There are no fields yet added. You can add new fields on the <a href="@link">Manage fields</a> page.', array('@link' => url($admin_path . '/fields'))), 'warning');
+    return $form;
+  }
+
+  $table = array(
+    '#type' => 'field_ui_table',
+    '#tree' => TRUE,
+    '#header' => array(
+      t('Field'),
+      t('Weight'),
+      t('Parent'),
+      t('Label'),
+      array('data' => t('Format'), 'colspan' => 3),
+    ),
+    '#regions' => array(
+      'visible' => array('message' => t('No field is displayed.')),
+      'hidden' => array('title' => t('Hidden'), 'message' => t('No field is hidden.')),
+    ),
+    '#parent_options' => array(),
+    '#attributes' => array(
+      'class' => array('field-ui-overview'),
+      'id' => 'field-display-overview',
+    ),
+    // Add Ajax wrapper.
+    '#prefix' => '<div id="field-display-overview-wrapper">',
+    '#suffix' => '</div>',
+  );
+
+  $field_label_options = array(
+    'above' => t('Above'),
+    'inline' => t('Inline'),
+    'hidden' => t('<Hidden>'),
+  );
+  $extra_visibility_options = array(
+    'visible' => t('Visible'),
+    'hidden' => t('Hidden'),
+  );
+
+  // Field rows.
+  foreach ($instances as $name => $instance) {
+    $field = field_info_field($instance['field_name']);
+    $display = $instance['display'][$view_mode];
+    $table[$name] = array(
+      '#attributes' => array('class' => array('draggable', 'tabledrag-leaf')),
+      '#row_type' => 'field',
+      '#region_callback' => 'field_ui_display_overview_row_region',
+      '#js_settings' => array(
+        'rowHandler' => 'field',
+        'defaultFormatter' => $field_types[$field['type']]['default_formatter'],
+      ),
+      'human_name' => array(
+        '#markup' => check_plain($instance['label']),
+      ),
+      'weight' => array(
+        '#type' => 'textfield',
+        '#title' => t('Weight for @title', array('@title' => $instance['label'])),
+        '#title_display' => 'invisible',
+        '#default_value' => $display['weight'],
+        '#size' => 3,
+        '#attributes' => array('class' => array('field-weight')),
+      ),
+      'parent_wrapper' => array(
+        'parent' => array(
+          '#type' => 'select',
+          '#title' => t('Label display for @title', array('@title' => $instance['label'])),
+          '#title_display' => 'invisible',
+          '#options' => $table['#parent_options'],
+          '#empty_value' => '',
+          '#attributes' => array('class' => array('field-parent')),
+          '#parents' => array('fields', $name, 'parent'),
+        ),
+        'hidden_name' => array(
+          '#type' => 'hidden',
+          '#default_value' => $name,
+          '#attributes' => array('class' => array('field-name')),
+        ),
+      ),
+      'label' => array(
+        '#type' => 'select',
+        '#title' => t('Label display for @title', array('@title' => $instance['label'])),
+        '#title_display' => 'invisible',
+        '#options' => $field_label_options,
+        '#default_value' => $display['label'],
+      ),
+    );
+
+    $formatter_options = field_ui_formatter_options($field['type']);
+    $formatter_options['hidden'] = t('<Hidden>');
+    $table[$name]['format'] = array(
+      'type' => array(
+        '#type' => 'select',
+        '#title' => t('Formatter for @title', array('@title' => $instance['label'])),
+        '#title_display' => 'invisible',
+        '#options' => $formatter_options,
+        '#default_value' => $display['type'],
+        '#parents' => array('fields', $name, 'type'),
+        '#attributes' => array('class' => array('field-formatter-type')),
+      ),
+      'settings_edit_form' => array(),
+    );
+
+    // Formatter settings.
+
+    // Check the currently selected formatter, and merge persisted values for
+    // formatter settings.
+    if (isset($form_state['values']['fields'][$name]['type'])) {
+      $formatter_type = $form_state['values']['fields'][$name]['type'];
+    }
+    else {
+      $formatter_type = $display['type'];
+    }
+    if (isset($form_state['formatter_settings'][$name])) {
+      $settings = $form_state['formatter_settings'][$name];
+    }
+    else {
+      $settings = $display['settings'];
+    }
+    $settings += field_info_formatter_settings($formatter_type);
+
+    $instance['display'][$view_mode]['type'] = $formatter_type;
+    $formatter = field_info_formatter_types($formatter_type);
+    $instance['display'][$view_mode]['module'] = $formatter['module'];
+    $instance['display'][$view_mode]['settings'] = $settings;
+
+    // Base button element for the various formatter settings actions.
+    $base_button = array(
+      '#submit' => array('field_ui_display_overview_multistep_submit'),
+      '#ajax' => array(
+        'callback' => 'field_ui_display_overview_multistep_js',
+        'wrapper' => 'field-display-overview-wrapper',
+        'effect' => 'fade',
+      ),
+      '#field_name' => $name,
+    );
+
+    if ($form_state['formatter_settings_edit'] == $name) {
+      // We are currently editing this field's formatter settings. Display the
+      // settings form and submit buttons.
+      $table[$name]['format']['settings_edit_form'] = array();
+
+      $settings_form = array();
+      $function = $formatter['module'] . '_field_formatter_settings_form';
+      if (function_exists($function)) {
+        $settings_form = $function($field, $instance, $view_mode, $form, $form_state);
+      }
+
+      if ($settings_form) {
+        $table[$name]['format']['#cell_attributes'] = array('colspan' => 3);
+        $table[$name]['format']['settings_edit_form'] = array(
+          '#type' => 'container',
+          '#attributes' => array('class' => array('field-formatter-settings-edit-form')),
+          '#parents' => array('fields', $name, 'settings_edit_form'),
+          'label' => array(
+            '#markup' => t('Format settings:') . ' <span class="formatter-name">' . $formatter['label'] . '</span>',
+          ),
+          'settings' => $settings_form,
+          'actions' => array(
+            '#type' => 'actions',
+            'save_settings' => $base_button + array(
+              '#type' => 'submit',
+              '#name' => $name . '_formatter_settings_update',
+              '#value' => t('Update'),
+              '#op' => 'update',
+            ),
+            'cancel_settings' => $base_button + array(
+              '#type' => 'submit',
+              '#name' => $name . '_formatter_settings_cancel',
+              '#value' => t('Cancel'),
+              '#op' => 'cancel',
+              // Do not check errors for the 'Cancel' button, but make sure we
+              // get the value of the 'formatter type' select.
+              '#limit_validation_errors' => array(array('fields', $name, 'type')),
+            ),
+          ),
+        );
+        $table[$name]['#attributes']['class'][] = 'field-formatter-settings-editing';
+      }
+    }
+    else {
+      // Display a summary of the current formatter settings.
+      $summary = module_invoke($formatter['module'], 'field_formatter_settings_summary', $field, $instance, $view_mode);
+      $table[$name]['settings_summary'] = array();
+      $table[$name]['settings_edit'] = array();
+      if ($summary) {
+        $table[$name]['settings_summary'] = array(
+          '#markup' => '<div class="field-formatter-summary">' . $summary . '</div>',
+          '#cell_attributes' => array('class' => array('field-formatter-summary-cell')),
+        );
+        $table[$name]['settings_edit'] = $base_button + array(
+          '#type' => 'image_button',
+          '#name' => $name . '_formatter_settings_edit',
+          '#src' => 'misc/configure.png',
+          '#attributes' => array('class' => array('field-formatter-settings-edit'), 'alt' => t('Edit')),
+          '#op' => 'edit',
+          // Do not check errors for the 'Edit' button, but make sure we get
+          // the value of the 'formatter type' select.
+          '#limit_validation_errors' => array(array('fields', $name, 'type')),
+          '#prefix' => '<div class="field-formatter-settings-edit-wrapper">',
+          '#suffix' => '</div>',
+        );
+      }
+    }
+  }
+
+  // Non-field elements.
+  foreach ($extra_fields as $name => $extra_field) {
+    $display = $extra_field['display'][$view_mode];
+    $table[$name] = array(
+      '#attributes' => array('class' => array('draggable', 'tabledrag-leaf')),
+      '#row_type' => 'extra_field',
+      '#region_callback' => 'field_ui_display_overview_row_region',
+      '#js_settings' => array('rowHandler' => 'field'),
+      'human_name' => array(
+        '#markup' => check_plain($extra_field['label']),
+      ),
+      'weight' => array(
+        '#type' => 'textfield',
+        '#title' => t('Weight for @title', array('@title' => $extra_field['label'])),
+        '#title_display' => 'invisible',
+        '#default_value' => $display['weight'],
+        '#size' => 3,
+        '#attributes' => array('class' => array('field-weight')),
+      ),
+      'parent_wrapper' => array(
+        'parent' => array(
+          '#type' => 'select',
+          '#title' => t('Parents for @title', array('@title' => $extra_field['label'])),
+          '#title_display' => 'invisible',
+          '#options' => $table['#parent_options'],
+          '#empty_value' => '',
+          '#attributes' => array('class' => array('field-parent')),
+          '#parents' => array('fields', $name, 'parent'),
+        ),
+        'hidden_name' => array(
+          '#type' => 'hidden',
+          '#default_value' => $name,
+          '#attributes' => array('class' => array('field-name')),
+        ),
+      ),
+      'empty_cell' => array(
+        '#markup' => '&nbsp;',
+      ),
+      'format' => array(
+        'type' => array(
+          '#type' => 'select',
+          '#title' => t('Visibility for @title', array('@title' => $extra_field['label'])),
+          '#title_display' => 'invisible',
+          '#options' => $extra_visibility_options,
+          '#default_value' => $display['visible'] ? 'visible' : 'hidden',
+          '#parents' => array('fields', $name, 'type'),
+          '#attributes' => array('class' => array('field-formatter-type')),
+        ),
+      ),
+      'settings_summary' => array(),
+      'settings_edit' => array(),
+    );
+  }
+
+  $form['fields'] = $table;
+
+  // Custom display settings.
+  if ($view_mode == 'default') {
+    $form['modes'] = array(
+      '#type' => 'fieldset',
+      '#title' => t('Custom display settings'),
+      '#collapsible' => TRUE,
+      '#collapsed' => TRUE,
+    );
+    // Collect options and default values for the 'Custom display settings'
+    // checkboxes.
+    $options = array();
+    $default = array();
+    $entity_info = entity_get_info($entity_type);
+    $view_modes = $entity_info['view modes'];
+    $view_mode_settings = field_view_mode_settings($entity_type, $bundle);
+    foreach ($view_modes as $view_mode_name => $view_mode_info) {
+      $options[$view_mode_name] = $view_mode_info['label'];
+      if (!empty($view_mode_settings[$view_mode_name]['custom_settings'])) {
+        $default[] = $view_mode_name;
+      }
+    }
+    $form['modes']['view_modes_custom'] = array(
+      '#type' => 'checkboxes',
+      '#title' => t('Use custom display settings for the following view modes'),
+      '#options' => $options,
+      '#default_value' => $default,
+    );
+  }
+
+  // In overviews involving nested rows from contributed modules (i.e
+  // field_group), the 'format type' selects can trigger a series of changes in
+  // child rows. The #ajax behavior is therefore not attached directly to the
+  // selects, but triggered by the client-side script through a hidden #ajax
+  // 'Refresh' button. A hidden 'refresh_rows' input tracks the name of
+  // affected rows.
+  $form['refresh_rows'] = array('#type' => 'hidden');
+  $form['refresh'] = array(
+    '#type' => 'submit',
+    '#value' => t('Refresh'),
+    '#op' => 'refresh_table',
+    '#submit' => array('field_ui_display_overview_multistep_submit'),
+    '#ajax' => array(
+      'callback' => 'field_ui_display_overview_multistep_js',
+      'wrapper' => 'field-display-overview-wrapper',
+      'effect' => 'fade',
+      // The button stays hidden, so we hide the Ajax spinner too. Ad-hoc
+      // spinners will be added manually by the client-side script.
+      'progress' => 'none',
+    ),
+  );
+
+  $form['actions'] = array('#type' => 'actions');
+  $form['actions']['submit'] = array('#type' => 'submit', '#value' => t('Save'));
+
+  $form['#attached']['js'][] = drupal_get_path('module', 'field_ui') . '/field_ui.js';
+  $form['#attached']['css'][] = drupal_get_path('module', 'field_ui') . '/field_ui.css';
+
+  // Add tabledrag behavior.
+  $form['#attached']['drupal_add_tabledrag'][] = array('field-display-overview', 'order', 'sibling', 'field-weight');
+  $form['#attached']['drupal_add_tabledrag'][] = array('field-display-overview', 'match', 'parent', 'field-parent', 'field-parent', 'field-name');
+
+  return $form;
+}
+
+
